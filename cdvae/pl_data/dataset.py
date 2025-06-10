@@ -9,7 +9,7 @@ from torch_geometric.data import Data
 
 from cdvae.common.utils import PROJECT_ROOT
 from cdvae.common.data_utils import (
-    preprocess, preprocess_tensors, add_scaled_lattice_prop)
+    preprocess, preprocess_tensors, add_scaled_lattice_prop, lattice_params_to_matrix_torch)
 
 class CrystDataset(Dataset):
     def __init__(self, name: ValueNode, path: ValueNode,
@@ -45,50 +45,50 @@ class CrystDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.cached_data)
-    
+
     def __getitem__(self, index):
         data_dict = self.cached_data[index]
 
-        # 提取图结构数据
         (frac_coords, atom_types, lengths, angles, edge_indices,
         to_jimages, num_atoms) = data_dict['graph_arrays']
+        
+        # 导入您确认存在的函数
+        from cdvae.common.data_utils import lattice_params_to_matrix_torch
 
-        # 构建基本数据对象
+        # 1. 【关键】将所有 numpy 数组转换为 torch 张量，并【立即】统一为 float32
+        frac_coords = torch.from_numpy(frac_coords).float()
+        atom_types = torch.from_numpy(atom_types).long()
+        lengths = torch.from_numpy(lengths).float()
+        angles = torch.from_numpy(angles).float()
+        edge_indices = torch.from_numpy(edge_indices).long()
+        to_jimages = torch.from_numpy(to_jimages).long()
+
+        # 2. 因为所有输入都已是 float32，后续所有计算结果也都会是 float32
+        #    增加 .view(1, -1) 来满足下游函数对“批次”维度的要求
+        lattice = lattice_params_to_matrix_torch(lengths.view(1, -1), angles.view(1, -1)).squeeze(0)
+        pos = torch.einsum('bi,ij->bj', frac_coords, lattice)
+
+        # 3. 构建 PyG Data 对象，所有属性的数据类型都已统一
         data = Data(
-            frac_coords=torch.Tensor(frac_coords),
-            atom_types=torch.LongTensor(atom_types),
-            lengths=torch.Tensor(lengths).view(1, -1),
-            angles=torch.Tensor(angles).view(1, -1),
-            edge_index=torch.LongTensor(edge_indices.T).contiguous(),
-            to_jimages=torch.LongTensor(to_jimages),
+            x=torch.ones(num_atoms, 1),
+            pos=pos,
+            frac_coords=frac_coords,
+            atom_types=atom_types,
+            lengths=lengths.view(1, -1),
+            angles=angles.view(1, -1),
+            cell=lattice,
+            edge_index=edge_indices.t().contiguous(),
+            to_jimages=to_jimages,
             num_atoms=num_atoms,
             num_bonds=edge_indices.shape[0],
             num_nodes=num_atoms,
         )
+
+        # 4. 处理目标属性 y
+        formation_energy = float(data_dict.get('formation_energy_per_atom', 0.0))
+        target_prop_value = float(data_dict.get(self.prop, 0.0))
         
-        # 使用安全的方式获取属性值
-        formation_energy = 0.0
-        target_prop_value = 0.0
-        
-        # 安全获取形成能
-        if 'formation_energy_per_atom' in data_dict:
-            formation_energy = data_dict['formation_energy_per_atom']
-            if self.energy_scaler:
-                formation_energy = self.energy_scaler.transform(formation_energy)
-        else:
-            print(f"警告: 数据中未找到 'formation_energy_per_atom'，使用默认值")
-        
-        # 安全获取目标属性
-        if self.prop in data_dict:
-            target_prop_value = data_dict[self.prop]
-            if self.scaler:
-                target_prop_value = self.scaler.transform(target_prop_value)
-        else:
-            print(f"警告: 属性 '{self.prop}' 在数据中未找到，使用默认值")
-        
-        # 构造二维张量 y
-        combined_y = torch.tensor([formation_energy, target_prop_value], dtype=torch.float).view(1, 2)
-        data.y = combined_y
+        data.y = torch.tensor([formation_energy, target_prop_value], dtype=torch.float32).view(1, 2)
         
         return data
 

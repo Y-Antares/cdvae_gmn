@@ -718,115 +718,74 @@ class CDVAE(BaseModule):
     
     def property_loss(self, z, batch):
         """
-        计算多目标属性预测损失，支持不同的优化方向和优化方法
+        正确计算多目标属性预测损失的修正版本。
         """
-        # 检查batch.y的形状和有效性
-        if not hasattr(batch, 'y') or batch.y is None:
+        if not (self.predict_property and hasattr(batch, 'y') and batch.y is not None):
             return torch.tensor(0.0, device=z.device), torch.tensor(0.0, device=z.device), torch.tensor(0.0, device=z.device)
-            
-        # 获取优化方向
-        optimization_direction = getattr(self, 'optimization_direction', ['min', 'min'])  # [min, max]
+
+        # 从 hparams 中安全地获取多目标配置
+        multi_obj_config = self.hparams.get('multi_objective', {})
+        optimization_direction = multi_obj_config.get('direction', ['min', 'min'])
+        optimization_method = multi_obj_config.get('method', 'weighted')
+        property_weights = torch.tensor(multi_obj_config.get('weights', [0.5, 0.5]), device=z.device)
         
-        # 获取优化方法
-        optimization_method = getattr(self, 'optimization_method', 'weighted')  # 'weighted', 'tchebycheff', 'boundary'
-        
-        # 调整目标张量形状
-        if batch.y.dim() == 3 and batch.y.size(2) == 2:
-            target = batch.y.squeeze(1)
-        else:
-            if batch.y.dim() == 2 and batch.y.size(1) == 2:
-                target = batch.y
-            else:
-                target = batch.y.view(-1, 2)
+        # 鲁棒地处理目标张量的形状，确保为 [batch_size, 2]
+        target = batch.y.view(-1, 2)
             
-        # 共享特征提取
         shared_features = self.fc_property_shared(z)
-        
-        # 应用各自的预测头
         energy_pred = self.energy_head(shared_features)
         target_pred = self.target_head(shared_features)
         
-        # 获取目标值
-        energy_target = target[:, 0:1]  # 形成能目标
-        target_target = target[:, 1:2]  # 目标属性
+        energy_target = target[:, 0:1]
+        target_target = target[:, 1:2]
         
-        # 计算各个损失
-        energy_loss = F.mse_loss(energy_pred, energy_target)
+        # 计算每个样本的损失 (reduction='none')，以便进行逐样本操作
+        energy_loss_ind = F.mse_loss(energy_pred, energy_target, reduction='none')
         
-        # 根据优化方向调整目标属性损失
-        if optimization_direction is not None and len(optimization_direction) > 1 and optimization_direction[1] == 'max':
-            # 对于最大化目标，我们翻转损失计算（预测值和目标值的差的负值）
-            target_loss = F.mse_loss(-target_pred, -target_target)
-            
-            # 同时对预测值取负，用于后续的优化方法计算
-            target_pred_for_opt = -target_pred
-            target_target_for_opt = -target_target
+        # 根据优化方向（最大化或最小化）处理第二个目标
+        if optimization_direction[1] == 'max':
+            target_loss_ind = F.mse_loss(-target_pred, -target_target, reduction='none')
         else:
-            # 默认为最小化
-            target_loss = F.mse_loss(target_pred, target_target)
-            target_pred_for_opt = target_pred
-            target_target_for_opt = target_target
+            target_loss_ind = F.mse_loss(target_pred, target_target, reduction='none')
         
-        # 获取或初始化理想点（最小目标值）
-        if not hasattr(self, 'ideal_points'):
-            self.register_buffer('ideal_points', torch.tensor([float('inf'), float('inf')], device=z.device))
-            
-        # 更新理想点
-        with torch.no_grad():
-            current_min_energy = energy_pred.min().item()
-            current_min_target = target_pred_for_opt.min().item()
-            
-            self.ideal_points[0] = min(self.ideal_points[0].item(), current_min_energy)
-            self.ideal_points[1] = min(self.ideal_points[1].item(), current_min_target)
-        
-        # 根据不同的优化方法计算损失
+        # 计算用于日志记录的平均损失
+        energy_loss_mean = energy_loss_ind.mean()
+        target_loss_mean = target_loss_ind.mean()
+
         if optimization_method == 'tchebycheff':
-            # Tchebycheff分解法
-            weights = self.property_weights if self.property_weights is not None else torch.tensor([0.5, 0.5], device=z.device)
+            ideal_points = torch.tensor(multi_obj_config.get('init_ideal_points', [0.0, 0.0]), device=z.device)
             
-            energy_term = weights[0] * torch.abs(energy_pred - self.ideal_points[0])
-            target_term = weights[1] * torch.abs(target_pred_for_opt - self.ideal_points[1])
+            # 使用广播机制计算加权的绝对差值
+            energy_term = property_weights[0] * torch.abs(energy_loss_ind - ideal_points[0])
+            target_term = property_weights[1] * torch.abs(target_loss_ind - ideal_points[1])
             
-            # 每个样本取最大值，然后求平均
-            property_loss = torch.max(torch.stack([energy_term, target_term], dim=1), dim=1)[0].mean()
-            
+            # 对每个样本取最大值，然后对整个批次求平均
+            property_loss = torch.mean(torch.max(energy_term, target_term))
+
         elif optimization_method == 'boundary':
-            # 边界交叉法
-            weights = self.property_weights if self.property_weights is not None else torch.tensor([0.5, 0.5], device=z.device)
-            theta = getattr(self, 'boundary_theta', 5.0)  # 默认theta值
+            ideal_points = torch.tensor(multi_obj_config.get('init_ideal_points', [0.0, 0.0]), device=z.device)
+            theta = multi_obj_config.get('boundary_theta', 5.0)
             
-            # 构建当前解向量和理想点向量
-            f_z = torch.cat([energy_pred, target_pred_for_opt], dim=1)
-            z_star = self.ideal_points.to(f_z.device)
+            f_z = torch.cat([energy_loss_ind, target_loss_ind], dim=1)
+            diff = f_z - ideal_points
             
-            # 计算向量差
-            diff = f_z - z_star
+            norm = torch.norm(diff, p=2, dim=1)
             
-            # 计算范数
-            norm = torch.norm(diff, dim=1, keepdim=True)
-            
-            # 计算夹角余弦值 (确保权重向量的维度与diff匹配)
-            weights_tensor = weights.to(diff.device).view(1, 2).expand_as(diff)
-            lambda_norm = torch.sqrt((weights_tensor**2).sum(dim=1, keepdim=True))
-            cos_angle = (weights_tensor * diff).sum(dim=1, keepdim=True) / (norm * lambda_norm + 1e-8)
-            
-            # 计算d1和d2
+            # 使用广播进行计算
+            cos_angle = torch.sum(property_weights * diff, dim=1) / (norm * torch.norm(property_weights) + 1e-8)
+            # 确保 cos_angle 在 [-1, 1] 范围内以避免 sqrt 产生 NaN
+            cos_angle = torch.clamp(cos_angle, -1.0, 1.0)
+            sin_angle = torch.sqrt(1 - cos_angle**2)
+             
             d1 = norm * cos_angle
-            d2 = norm * torch.sqrt(1 - cos_angle**2 + 1e-8)
-            
+            d2 = norm * sin_angle
+             
             property_loss = (d1 + theta * d2).mean()
-            
-        else:
-            # 默认：线性加权
-            if self.property_weights is not None:
-                property_loss = (
-                    self.property_weights[0] * energy_loss + 
-                    self.property_weights[1] * target_loss
-                )
-            else:
-                property_loss = 0.5 * energy_loss + 0.5 * target_loss
-        
-        return property_loss, energy_loss, target_loss
+
+        else: # 默认使用加权和 (Weighted Sum)
+            property_loss = (property_weights[0] * energy_loss_mean + property_weights[1] * target_loss_mean)
+
+        return property_loss, energy_loss_mean, target_loss_mean
         
     def lattice_loss(self, pred_lengths_and_angles, batch):
         if self.lattice_scaler is None:

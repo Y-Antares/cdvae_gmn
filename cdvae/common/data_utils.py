@@ -241,13 +241,12 @@ def lattice_matrix_to_params(matrix):
     alpha, beta, gamma = angles
     return a, b, c, alpha, beta, gamma
 
-
 def frac_to_cart_coords(
     frac_coords,
     lengths,
     angles,
     num_atoms,
-):
+):  
     lattice = lattice_params_to_matrix_torch(lengths, angles)
     lattice_nodes = torch.repeat_interleave(lattice, num_atoms, dim=0)
     pos = torch.einsum('bi,bij->bj', frac_coords, lattice_nodes)  # cart coords
@@ -260,14 +259,13 @@ def cart_to_frac_coords(
     lengths,
     angles,
     num_atoms,
-):
+):  
     lattice = lattice_params_to_matrix_torch(lengths, angles)
     # use pinv in case the predicted lattice is not rank 3
     inv_lattice = torch.linalg.pinv(lattice)
     inv_lattice_nodes = torch.repeat_interleave(inv_lattice, num_atoms, dim=0)
     frac_coords = torch.einsum('bi,bij->bj', cart_coords, inv_lattice_nodes)
     return (frac_coords % 1.)
-
 
 def get_pbc_distances(
     coords,
@@ -943,59 +941,55 @@ class StandardScaler:
         return transformed_with_none
 
 class MinMaxScalerTorch(object):
-    """最大值最小值归一化器，将数据缩放到[0,1]或自定义范围。"""
+    """
+    MinMax scaler for torch.Tensor.
+    """
+    def __init__(self, x=None):
+        self.min_ = None
+        self.max_ = None
+        # --- 开始修正 ---
+        # `data_range_` is a more descriptive name than `ranges`
+        self.data_range_ = None
+        if x is not None:
+            self.fit(x)
+        # --- 修正结束 ---
 
-    def __init__(self, min_val=0.0, max_val=1.0, mins=None, maxs=None):
-        self.min_val = min_val  # 归一化后的最小值
-        self.max_val = max_val  # 归一化后的最大值
-        self.mins = mins  # 原始数据的最小值
-        self.maxs = maxs  # 原始数据的最大值
-        self.scale = max_val - min_val  # 归一化后的范围
+    def fit(self, x):
+        self.min_ = torch.min(x, dim=0)[0]
+        self.max_ = torch.max(x, dim=0)[0]
+        # --- 开始修正 ---
+        # Calculate and store the data range
+        self.data_range_ = self.max_ - self.min_
+        # Handle cases where the range is zero to avoid division by zero errors
+        self.data_range_[self.data_range_ == 0] = 1.
+        # --- 修正结束 ---
 
-    def fit(self, X):
-        """计算给定数据的最小值和最大值"""
-        X = torch.tensor(X, dtype=torch.float)
-        self.mins = torch.min(X, dim=0)[0]
-        self.maxs = torch.max(X, dim=0)[0]
-        # 处理最大值等于最小值的情况
-        self.ranges = self.maxs - self.mins
-        self.ranges = torch.where(self.ranges == 0, torch.ones_like(self.ranges), self.ranges)
+    def transform(self, x):
+        return (x - self.min_) / self.data_range_
 
-    def transform(self, X):
-        """将数据按照最小值最大值进行归一化"""
-        X = torch.tensor(X, dtype=torch.float)
-        normalized = (X - self.mins) / self.ranges
-        # 缩放到目标范围
-        return normalized * self.scale + self.min_val
-
-    def inverse_transform(self, X):
-        """将归一化的数据转换回原始范围"""
-        X = torch.tensor(X, dtype=torch.float)
-        # 先将数据转回[0,1]范围
-        normalized = (X - self.min_val) / self.scale
-        # 再转回原始范围
-        return normalized * self.ranges + self.mins
-
-    def match_device(self, tensor):
-        """确保标准化器在与输入相同的设备上"""
-        if self.mins.device != tensor.device:
-            self.mins = self.mins.to(tensor.device)
-            self.maxs = self.maxs.to(tensor.device)
-            self.ranges = self.ranges.to(tensor.device)
+    def inverse_transform(self, x):
+        return x * self.data_range_ + self.min_
 
     def copy(self):
-        """创建标准化器的副本"""
-        return MinMaxScalerTorch(
-            min_val=self.min_val,
-            max_val=self.max_val,
-            mins=self.mins.clone().detach(),
-            maxs=self.maxs.clone().detach())
+        new_scaler = MinMaxScalerTorch()
+        # --- 开始修正 ---
+        # Ensure all attributes are copied
+        if self.min_ is not None:
+            new_scaler.min_ = self.min_.clone()
+        if self.max_ is not None:
+            new_scaler.max_ = self.max_.clone()
+        if self.data_range_ is not None:
+            new_scaler.data_range_ = self.data_range_.clone()
+        return new_scaler
+        # --- 修正结束 ---
 
-    def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}("
-            f"min_val: {self.min_val}, "
-            f"max_val: {self.max_val}, "
-            f"mins: {self.mins.tolist() if self.mins is not None else None}, "
-            f"maxs: {self.maxs.tolist() if self.maxs is not None else None})"
-        )
+    def match_device(self, tensor):
+        # --- 开始修正 ---
+        # This function ensures the scaler's tensors are on the same device as the data
+        if self.min_ is not None and self.min_.device != tensor.device:
+            self.min_ = self.min_.to(tensor.device)
+        if self.max_ is not None and self.max_.device != tensor.device:
+            self.max_ = self.max_.to(tensor.device)
+        if self.data_range_ is not None and self.data_range_.device != tensor.device:
+            self.data_range_ = self.data_range_.to(tensor.device)
+        # --- 修正结束 ---
