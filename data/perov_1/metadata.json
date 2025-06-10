@@ -1,0 +1,17 @@
+{
+  "dataset_name": "perov_1",
+  "target_property": "total_magnetization",
+  "formula_filter": "ABC3",
+  "formation_energy_stats": {
+    "mean": -2.505495006909091,
+    "std": 0.7051287329955794,
+    "min": -3.67017507,
+    "max": 0.315080773
+  },
+  "target_property_stats": {
+    "mean": 5.553978644268775,
+    "std": 7.738947550972331,
+    "min": 0.0,
+    "max": 48.0089536
+  }
+}

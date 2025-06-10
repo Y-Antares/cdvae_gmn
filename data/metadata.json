@@ -1,0 +1,16 @@
+{
+  "dataset_name": "data",
+  "target_property": "total_magnetization",
+  "formation_energy_stats": {
+    "mean": -2.290985764595157,
+    "std": 0.7366879875911027,
+    "min": -3.909334225,
+    "max": 2.373304443
+  },
+  "target_property_stats": {
+    "mean": 12.146192362276974,
+    "std": 20.460464743894516,
+    "min": 0.0,
+    "max": 256.2355345
+  }
+}

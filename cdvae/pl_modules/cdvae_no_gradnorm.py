@@ -1,0 +1,297 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Dict, List, Optional, Tuple
+
+from cdvae.pl_modules.model import CDVAE, BaseModule
+from gradnorm_enhancement import GradNorm
+
+class EnhancedCDVAE(CDVAE):
+    """
+    Enhanced CDVAE with separate GradNorm and multi-objective optimization options.
+    
+    This model allows using:
+    1. GradNorm for dynamic task weighting
+    2. Different multi-objective optimization methods (weighted sum, Tchebycheff, boundary crossing)
+    
+    These two features can be used independently or combined.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        # Extract GradNorm and multi-objective configs before init
+        self.gradnorm_config = kwargs.pop('gradnorm', {})
+        self.multi_obj_config = kwargs.pop('multi_objective', {})
+        
+        # Initialize parent class
+        super().__init__(*args, **kwargs)
+        
+        # Setup optimization method
+        self.optimization_method = self.multi_obj_config.get('method', 'weighted')
+        self.optimization_direction = self.multi_obj_config.get('direction', ['min', 'min'])
+        self.property_weights = self.multi_obj_config.get('weights', [0.5, 0.5])
+        self.boundary_theta = self.multi_obj_config.get('boundary_theta', 5.0)
+        
+        # Initialize ideal points for Tchebycheff/boundary methods
+        if self.optimization_method in ['tchebycheff', 'boundary']:
+            init_ideal_points = self.multi_obj_config.get('init_ideal_points', [float('inf'), float('inf')])
+            self.register_buffer('ideal_points', torch.tensor(init_ideal_points))
+        
+        # Setup GradNorm
+        self.use_gradnorm = self.gradnorm_config.get('enable', False)
+        
+        if self.use_gradnorm:
+            self.task_names = ['num_atom', 'lattice', 'composition', 'coord', 'type', 'kld']
+            
+            if self.predict_property:
+                # If multi-target prediction
+                if hasattr(self, 'fc_property_shared') and self.fc_property_shared is not None:
+                    self.task_names.extend(['energy', 'target'])
+                else:
+                    self.task_names.append('property')
+            
+            self.gradnorm = GradNorm(
+                num_tasks=len(self.task_names),
+                alpha=self.gradnorm_config.get('alpha', 1.5),
+                enable=self.use_gradnorm,
+                lr=self.gradnorm_config.get('lr', 0.025)
+            )
+            
+            # Get shared parameter for gradient calculation
+            # This should be a parameter from the encoder's shared layers
+            if hasattr(self.encoder, 'int_blocks'):
+                # For GemNetT or similar architectures
+                self.shared_parameter = next(self.encoder.int_blocks[0].parameters())
+            else:
+                # Fallback to first encoder parameter
+                self.shared_parameter = next(self.encoder.parameters())
+    
+    def compute_property_loss(self, z, target):
+        """
+        Compute property prediction loss using the appropriate multi-objective method.
+        
+        Args:
+            z: Latent representation
+            target: Ground truth property values
+            
+        Returns:
+            Dictionary of property losses
+        """
+        losses = {}
+        
+        # If predicting multiple targets (e.g., formation energy and target property)
+        if hasattr(self, 'fc_property_shared') and self.fc_property_shared is not None:
+            shared_features = self.fc_property_shared(z)
+            
+            # Predict formation energy
+            energy_pred = self.energy_head(shared_features)
+            energy_loss = F.mse_loss(energy_pred, target[:, :, 0])
+            
+            # Predict target property
+            target_pred = self.target_head(shared_features)
+            target_loss = F.mse_loss(target_pred, target[:, :, 1])
+            
+            # Store individual losses
+            losses['energy_loss'] = energy_loss
+            losses['target_loss'] = target_loss
+            
+            # Apply multi-objective method
+            if self.optimization_method == 'weighted':
+                # Simple weighted sum
+                combined_loss = self.property_weights[0] * energy_loss + self.property_weights[1] * target_loss
+                
+            elif self.optimization_method == 'tchebycheff':
+                # Tchebycheff method
+                # Update ideal points
+                with torch.no_grad():
+                    self.ideal_points[0] = min(self.ideal_points[0], energy_loss.detach())
+                    
+                    # Handle max/min for target property
+                    if self.optimization_direction[1] == 'max':
+                        # If maximizing target property, we minimize negative loss
+                        target_loss_for_ideal = -target_loss.detach()
+                    else:
+                        target_loss_for_ideal = target_loss.detach()
+                    
+                    self.ideal_points[1] = min(self.ideal_points[1], target_loss_for_ideal)
+                
+                # Calculate weighted distance to ideal point
+                if self.optimization_direction[1] == 'max':
+                    target_loss_for_opt = -target_loss
+                else:
+                    target_loss_for_opt = target_loss
+                
+                energy_term = self.property_weights[0] * torch.abs(energy_loss - self.ideal_points[0])
+                target_term = self.property_weights[1] * torch.abs(target_loss_for_opt - self.ideal_points[1])
+                
+                combined_loss = torch.max(energy_term, target_term)
+                
+            elif self.optimization_method == 'boundary':
+                # Boundary crossing method
+                # Update ideal points
+                with torch.no_grad():
+                    self.ideal_points[0] = min(self.ideal_points[0], energy_loss.detach())
+                    
+                    if self.optimization_direction[1] == 'max':
+                        target_loss_for_ideal = -target_loss.detach()
+                    else:
+                        target_loss_for_ideal = target_loss.detach()
+                    
+                    self.ideal_points[1] = min(self.ideal_points[1], target_loss_for_ideal)
+                
+                # Create current point
+                if self.optimization_direction[1] == 'max':
+                    target_loss_for_opt = -target_loss
+                else:
+                    target_loss_for_opt = target_loss
+                
+                f_current = torch.stack([energy_loss, target_loss_for_opt], dim=0)
+                
+                # Calculate d1 (distance along weight vector)
+                weights = torch.tensor(self.property_weights, device=f_current.device)
+                diff = f_current - self.ideal_points
+                norm = torch.norm(diff)
+                
+                lambda_norm = torch.sqrt(torch.sum(weights**2))
+                cos_theta = torch.sum(weights * diff) / (norm * lambda_norm + 1e-8)
+                
+                d1 = norm * cos_theta
+                d2 = norm * torch.sqrt(1 - cos_theta**2 + 1e-8)
+                
+                combined_loss = d1 + self.boundary_theta * d2
+                
+            else:
+                # Default to weighted sum
+                combined_loss = self.property_weights[0] * energy_loss + self.property_weights[1] * target_loss
+            
+            losses['property_loss'] = combined_loss
+            
+        else:
+            # Single property prediction (original implementation)
+            pred = self.fc_property(z)
+            property_loss = F.mse_loss(pred, target)
+            losses['property_loss'] = property_loss
+        
+        return losses
+    
+    def compute_losses(self, batch, outputs, kld_weight=1.0):
+        """
+        Compute all model losses.
+        
+        Args:
+            batch: Input batch
+            outputs: Model outputs
+            kld_weight: Weight for KL divergence loss
+            
+        Returns:
+            Dictionary of all loss components
+        """
+        # Compute basic losses from parent class
+        base_losses = super().compute_losses(batch, outputs, kld_weight)
+        
+        # Handle property losses if needed
+        if hasattr(self, 'fc_property_shared') and self.fc_property_shared is not None:
+            # Ensure we don't double count property losses
+            if 'property_loss' in base_losses:
+                del base_losses['property_loss']
+            
+            # Add property losses from our multi-objective implementation
+            property_losses = self.compute_property_loss(outputs['z'], batch.y)
+            base_losses.update(property_losses)
+        
+        return base_losses
+    
+    def compute_stats(self, batch, outputs, prefix):
+        """
+        Compute and log stats, incorporating GradNorm if enabled.
+        
+        Args:
+            batch: Input batch
+            outputs: Model outputs
+            prefix: Prefix for logging keys
+            
+        Returns:
+            Tuple of (log_dict, total_loss)
+        """
+        # Compute losses
+        losses = self.compute_losses(batch, outputs)
+        
+        # Calculate total loss based on whether GradNorm is enabled
+        if self.use_gradnorm and self.training:
+            # Use GradNorm-weighted loss sum
+            task_losses = {task: losses.get(f'{task}_loss', torch.tensor(0.0, device=self.device)) 
+                         for task in self.task_names}
+            
+            # Calculate weighted sum
+            total_loss, weighted_losses = self.gradnorm.compute_weighted_losses(task_losses)
+            
+            # Compute GradNorm loss for weight updates
+            gradnorm_loss = self.gradnorm.compute_gradnorm_loss(task_losses, self.shared_parameter)
+            
+            # Update GradNorm weights
+            self.gradnorm.update_weights(gradnorm_loss)
+            
+            # Add GradNorm loss to total
+            total_loss = total_loss + gradnorm_loss
+        else:
+            # Use standard loss computation
+            # Manually apply fixed weights to each loss component
+            total_loss = (
+                self.hparams.cost_natom * losses.get('num_atom_loss', 0) +
+                self.hparams.cost_lattice * losses.get('lattice_loss', 0) +
+                self.hparams.cost_composition * losses.get('composition_loss', 0) +
+                self.hparams.cost_coord * losses.get('coord_loss', 0) +
+                self.hparams.cost_type * losses.get('type_loss', 0) +
+                kld_weight * self.hparams.beta * losses.get('kld_loss', 0)
+            )
+            
+            # Add property loss if present
+            if 'property_loss' in losses:
+                total_loss = total_loss + self.hparams.cost_property * losses.get('property_loss', 0)
+        
+        # Build log dictionary
+        log_dict = {
+            f'{prefix}_loss': total_loss,
+            f'{prefix}_num_atom_loss': losses.get('num_atom_loss', 0),
+            f'{prefix}_lattice_loss': losses.get('lattice_loss', 0),
+            f'{prefix}_composition_loss': losses.get('composition_loss', 0),
+            f'{prefix}_coord_loss': losses.get('coord_loss', 0),
+            f'{prefix}_type_loss': losses.get('type_loss', 0),
+            f'{prefix}_kld_loss': losses.get('kld_loss', 0),
+        }
+        
+        # Add property losses
+        if 'property_loss' in losses:
+            log_dict[f'{prefix}_property_loss'] = losses.get('property_loss', 0)
+        if 'energy_loss' in losses:
+            log_dict[f'{prefix}_energy_loss'] = losses.get('energy_loss', 0)
+        if 'target_loss' in losses:
+            log_dict[f'{prefix}_target_loss'] = losses.get('target_loss', 0)
+        
+        # Add GradNorm stats if enabled
+        if self.use_gradnorm and self.training:
+            log_dict[f'{prefix}_gradnorm_loss'] = gradnorm_loss
+            
+            # Log task weights
+            weights_dict = self.gradnorm.get_weights_dict(self.task_names)
+            for task_name, weight in weights_dict.items():
+                log_dict[f'{prefix}_weight_{task_name}'] = weight
+                
+            # Log ideal points for multi-objective methods
+            if hasattr(self, 'ideal_points'):
+                for i, name in enumerate(['energy', 'target']):
+                    log_dict[f'{prefix}_ideal_point_{name}'] = self.ideal_points[i]
+        
+        return log_dict, total_loss
+    
+    def configure_optimizers(self):
+        """
+        Configure optimizers, creating separate optimizers for model and GradNorm weights.
+        """
+        # Base optimizer setup from parent class
+        base_optimizers = super().configure_optimizers()
+        
+        if self.use_gradnorm:
+            # GradNorm has its own internal optimizer, no need to create one here
+            return base_optimizers
+        else:
+            return base_optimizers

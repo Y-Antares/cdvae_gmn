@@ -1,0 +1,53 @@
+# Enhanced CDVAE Model Configuration
+_target_: cdvae.pl_modules.enhanced_cdvae.EnhancedCDVAE
+
+# 基础模型参数
+hidden_dim: 256
+latent_dim: 256
+fc_num_layers: 4
+max_atoms: ${data.max_atoms}
+
+# 基础损失权重
+cost_natom: 1.0
+cost_coord: 10.0
+cost_type: 1.0
+cost_lattice: 10.0
+cost_composition: 1.0
+cost_edge: 10.0
+cost_property: 1.0
+beta: 0.01
+
+# 多目标优化配置 (这些将通过训练脚本传递)
+multi_objective:
+  method: ${optimization_method}
+  weights: ${property_weights}
+  direction: ${optimization_direction}
+  boundary_theta: ${boundary_theta}
+  init_ideal_points: ${init_ideal_points}
+
+# GradNorm配置 (这些将通过训练脚本传递)
+gradnorm:
+  enable: ${use_gradnorm}
+  alpha: ${gradnorm_alpha}
+  lr: ${gradnorm_lr}
+
+# 解码器参数
+teacher_forcing_lattice: true
+teacher_forcing_max_epoch: ${data.teacher_forcing_max_epoch}
+max_neighbors: 20
+radius: 7.0
+
+# 噪声参数
+sigma_begin: 10.0
+sigma_end: 0.01
+type_sigma_begin: 5.0
+type_sigma_end: 0.01
+num_noise_level: 50
+
+# 属性预测
+predict_property: true
+
+# 编码器和解码器配置
+defaults:
+  - encoder: dimenet
+  - decoder: gemnet

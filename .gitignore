@@ -1,0 +1,6 @@
+results/**
+hydra/**
+wandb/**
+data/**/
+!data/*
+data/pero.csv

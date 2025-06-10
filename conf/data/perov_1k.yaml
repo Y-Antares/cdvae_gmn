@@ -1,0 +1,94 @@
+# Enhanced CDVAE Configuration for Perovskite Materials
+# 钙钛矿材料的增强CDVAE配置
+
+# 基础数据配置
+root_path: ${oc.env:PROJECT_ROOT}/data/perov_1k
+prop: dir_gap
+target_property: dir_gap
+num_targets: 2  # 两个目标：formation_energy 和 dir_gap
+
+# 数据预处理参数
+niggli: true
+primitive: false
+graph_method: crystalnn
+lattice_scale_method: scale_length
+preprocess_workers: 16
+readout: mean
+max_atoms: 200
+otf_graph: false
+eval_model_name: perovskite
+
+# 标准化器配置
+scaler_type: minmax
+energy_scaler_type: minmax
+
+# 多目标优化配置
+multi_target: true
+energy_weight: 0.4
+property_weights: [0.4, 0.6]  # [formation_energy_weight, dir_gap_weight]
+
+# 优化方法设置
+optimization_method: "tchebycheff"  # weighted, tchebycheff, boundary
+optimization_direction: [min, max]  # [minimize formation_energy, maximize dir_gap]
+boundary_theta: 5.0
+init_ideal_points: [999.0, 999.0]
+
+# 训练参数
+train_max_epochs: 300
+early_stopping_patience: 50
+teacher_forcing_max_epoch: 150
+
+# GradNorm 配置
+use_gradnorm: true
+gradnorm_alpha: 1.5
+gradnorm_lr: 0.025
+
+# 数据模块配置
+datamodule:
+  _target_: cdvae.pl_data.datamodule.CrystDataModule
+  scaler_type: ${scaler_type}
+  energy_scaler_type: ${energy_scaler_type}
+
+  datasets:
+    train:
+      _target_: cdvae.pl_data.dataset.CrystDataset
+      name: Perovskite formation energy train
+      path: ${data.root_path}/train.csv
+      prop: ${data.prop}
+      niggli: ${data.niggli}
+      primitive: ${data.primitive}
+      graph_method: ${data.graph_method}
+      lattice_scale_method: ${data.lattice_scale_method}
+      preprocess_workers: ${data.preprocess_workers}
+
+    val:
+      - _target_: cdvae.pl_data.dataset.CrystDataset
+        name: Perovskite formation energy val
+        path: ${data.root_path}/val.csv
+        prop: ${data.prop}
+        niggli: ${data.niggli}
+        primitive: ${data.primitive}
+        graph_method: ${data.graph_method}
+        lattice_scale_method: ${data.lattice_scale_method}
+        preprocess_workers: ${data.preprocess_workers}
+
+    test:
+      - _target_: cdvae.pl_data.dataset.CrystDataset
+        name: Perovskite formation energy test
+        path: ${data.root_path}/test.csv
+        prop: ${data.prop}
+        niggli: ${data.niggli}
+        primitive: ${data.primitive}
+        graph_method: ${data.graph_method}
+        lattice_scale_method: ${data.lattice_scale_method}
+        preprocess_workers: ${data.preprocess_workers}
+
+  num_workers:
+    train: 8
+    val: 4
+    test: 4
+
+  batch_size:
+    train: 256
+    val: 128
+    test: 128

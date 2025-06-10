@@ -1,0 +1,6 @@
+# @package _global_
+input_file: data/pero.csv
+output_dir: data/perov_1
+target_property: total_magnetization
+train_ratio: 0.8
+val_ratio: 0.1

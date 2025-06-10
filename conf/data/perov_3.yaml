@@ -1,0 +1,85 @@
+root_path: ${oc.env:PROJECT_ROOT}/data/perov_3
+prop: dir_gap
+target_property: dir_gap
+num_targets: 2  # 两个目标
+# prop: scaled_lattice
+# num_targets: 6
+niggli: true
+primitive: false
+graph_method: crystalnn
+lattice_scale_method: scale_length
+preprocess_workers: 16
+readout: mean
+max_atoms: 200
+otf_graph: false
+eval_model_name: perovskite
+
+# 添加标准化器配置
+scaler_type: minmax  # 使用MinMax归一化
+energy_scaler_type: minmax  # 能量数据也使用MinMax归一化
+# scaler_type: standard  # 或者使用标准归一化
+
+# 添加多目标优化相关配置
+multi_target: true  # 启用多目标优化
+energy_weight: 0.4  # 形成能损失的权重
+property_weights: [0.4, 0.6]  # 多目标权重 [能量权重, 属性权重]
+
+# 多目标优化方法配置
+optimization_method: "weighted"  # 可选: "weighted", "tchebycheff", "boundary"
+boundary_theta: 5.0  # 边界交叉法的theta参数
+
+optimization_direction: [min, max]  # [能量, dir_gap] 的优化方向
+
+train_max_epochs: 300
+early_stopping_patience: 1000
+teacher_forcing_max_epoch: 150
+
+# 理想点初始化配置（可选）
+init_ideal_points: [9999.0, 9999.0]  # 初始理想点设置，通常设置为一个足够大的值
+
+datamodule:
+  _target_: cdvae.pl_data.datamodule.CrystDataModule
+
+  datasets:
+    train:
+      _target_: cdvae.pl_data.dataset.CrystDataset
+      name: Formation energy train
+      path: ${data.root_path}/train.csv
+      prop: ${data.prop}
+      niggli: ${data.niggli}
+      primitive: ${data.primitive}
+      graph_method: ${data.graph_method}
+      lattice_scale_method: ${data.lattice_scale_method}
+      preprocess_workers: ${data.preprocess_workers}
+
+    val:
+      - _target_: cdvae.pl_data.dataset.CrystDataset
+        name: Formation energy val
+        path: ${data.root_path}/val.csv
+        prop: ${data.prop}
+        niggli: ${data.niggli}
+        primitive: ${data.primitive}
+        graph_method: ${data.graph_method}
+        lattice_scale_method: ${data.lattice_scale_method}
+        preprocess_workers: ${data.preprocess_workers}
+
+    test:
+      - _target_: cdvae.pl_data.dataset.CrystDataset
+        name: Formation energy test
+        path: ${data.root_path}/test.csv
+        prop: ${data.prop}
+        niggli: ${data.niggli}
+        primitive: ${data.primitive}
+        graph_method: ${data.graph_method}
+        lattice_scale_method: ${data.lattice_scale_method}
+        preprocess_workers: ${data.preprocess_workers}
+
+  num_workers:
+    train: 8
+    val: 4
+    test: 4
+
+  batch_size:
+    train: 512
+    val: 256
+    test: 256

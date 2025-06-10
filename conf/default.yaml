@@ -1,0 +1,44 @@
+expname: test
+
+# metadata specialised for each experiment
+core:
+  version: 0.0.1
+  tags:
+    - ["enhanced-cdvae", "multi-objective", "gradnorm"]
+    - ${now:%Y-%m-%d}
+  print_config: true
+
+hydra:
+  run:
+    dir: ${oc.env:HYDRA_JOBS}/singlerun/${now:%Y-%m-%d}/${expname}/
+
+  sweep:
+    dir: ${oc.env:HYDRA_JOBS}/multirun/${now:%Y-%m-%d}/${expname}/
+    subdir: ${hydra.job.num}_${hydra.job.id}
+
+  job:
+    env_set:
+      WANDB_START_METHOD: thread
+      WANDB_DIR: ${oc.env:WABDB_DIR}
+
+defaults:
+  - _self_
+  - data: default
+  - logging: default
+  - model: enhanced_cdvae
+  - optim: default
+  - train: default
+  #  Decomment this parameter to get parallel job running
+  # - override hydra/launcher: joblib
+
+  
+# 覆盖配置
+max_epochs: ${data.train_max_epochs}
+use_gradnorm: ${data.use_gradnorm}
+gradnorm_alpha: ${data.gradnorm_alpha}
+gradnorm_lr: ${data.gradnorm_lr}
+multi_obj_method: ${data.optimization_method}
+property_weights: ${data.property_weights}
+optimization_direction: ${data.optimization_direction}
+boundary_theta: ${data.boundary_theta}
+init_ideal_points: ${data.init_ideal_points}

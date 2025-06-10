@@ -1,0 +1,16 @@
+{
+  "dataset_name": "perov_2",
+  "target_property": "dir_gap",
+  "formation_energy_stats": {
+    "mean": 1.4850704473406129,
+    "std": 0.7391113735517927,
+    "min": -0.64,
+    "max": 5.16
+  },
+  "target_property_stats": {
+    "mean": 0.09107960549489257,
+    "std": 0.5470843710343831,
+    "min": 0.0,
+    "max": 7.9
+  }
+}

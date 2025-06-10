@@ -1,0 +1,188 @@
+# ================================
+# Enhanced Model Evaluation Configuration
+# 增强模型评估配置文件
+# ================================
+
+# 基础评估配置
+evaluation:
+  model_name: "enhanced_cdvae"
+  evaluation_date: "2024-01-01"
+  evaluator_version: "1.0.0"
+  
+  # 设备配置
+  device: "auto"  # auto, cuda, cpu
+  batch_size: 64
+  num_workers: 4
+  
+  # 输出配置
+  output_dir: "evaluation_results"
+  save_detailed_results: true
+  generate_plots: true
+  generate_report: true
+
+# 评估任务配置
+tasks:
+  reconstruction:
+    enabled: true
+    metrics:
+      - "match_rate"
+      - "rmsd"
+      - "lattice_accuracy"
+      - "coordinate_accuracy"
+    
+  generation:
+    enabled: true
+    metrics:
+      - "validity_rate"
+      - "diversity"
+      - "novelty"
+      - "distribution_matching"
+    
+  property_prediction:
+    enabled: true
+    properties:
+      - "formation_energy"
+      - "target_property"
+    metrics:
+      - "mse"
+      - "mae" 
+      - "r2"
+      - "pearson_correlation"
+      - "spearman_correlation"
+    
+  multi_objective_optimization:
+    enabled: true
+    objectives:
+      - name: "formation_energy"
+        direction: "minimize"
+      - name: "target_property"
+        direction: "maximize"
+    metrics:
+      - "hypervolume"
+      - "igd"
+      - "pareto_front_size"
+      - "coverage"
+      - "spacing"
+      - "spread"
+    
+  representation_learning:
+    enabled: true
+    metrics:
+      - "latent_space_quality"
+      - "representation_similarity"
+      - "interpolation_quality"
+    
+  robustness:
+    enabled: true
+    noise_levels: [0.01, 0.05, 0.1]
+    num_samples: 100
+    metrics:
+      - "stability"
+      - "consistency"
+    
+  generalization:
+    enabled: false  # 需要域外数据
+    metrics:
+      - "ood_reconstruction"
+      - "ood_property_prediction"
+      - "ood_representation"
+
+# 数据配置
+data:
+  test_data_path: null  # 自动从模型路径推断
+  ood_data_path: null   # 可选的域外数据
+  reference_data_path: null  # 参考数据用于对比
+  
+  # 数据预处理
+  preprocessing:
+    normalize_properties: true
+    filter_invalid_structures: true
+    max_atoms: 200
+
+# 模型配置
+model:
+  checkpoint_path: null  # 自动从模型路径推断
+  model_type: "enhanced_cdvae"
+  
+  # 模型特定配置
+  cdvae:
+    latent_dim: 256
+    max_atoms: 200
+    predict_property: true
+    multi_target: true
+
+# 评估阈值和标准
+thresholds:
+  # 重构质量阈值
+  reconstruction:
+    acceptable_match_rate: 0.7
+    good_match_rate: 0.85
+    excellent_match_rate: 0.95
+    max_acceptable_rmsd: 0.5
+  
+  # 生成质量阈值
+  generation:
+    min_validity_rate: 0.8
+    min_diversity_score: 0.5
+    min_novelty_rate: 0.3
+  
+  # 属性预测阈值
+  property_prediction:
+    min_r2_score: 0.7
+    max_acceptable_mae: 0.2
+    min_correlation: 0.8
+  
+  # 多目标优化阈值
+  multi_objective:
+    min_pareto_ratio: 0.1
+    min_hypervolume: 0.5
+
+# 可视化配置
+visualization:
+  # 图表样式
+  style: "seaborn"
+  dpi: 300
+  figure_format: "png"
+  
+  # 颜色主题
+  color_palette: "husl"
+  
+  # 特定图表配置
+  radar_chart:
+    enabled: true
+    categories: ["reconstruction", "generation", "property_prediction", "multi_objective"]
+  
+  property_plots:
+    enabled: true
+    plot_types: ["scatter", "residual", "distribution"]
+  
+  pareto_plots:
+    enabled: true
+    show_reference: true
+    highlight_solutions: 10
+
+# 报告配置
+report:
+  format: "markdown"  # markdown, html, pdf
+  include_plots: true
+  include_raw_data: false
+  
+  sections:
+    - "executive_summary"
+    - "reconstruction_analysis"
+    - "generation_analysis"
+    - "property_prediction_analysis"
+    - "multi_objective_analysis"
+    - "representation_analysis"
+    - "robustness_analysis"
+    - "conclusions_and_recommendations"
+
+# 对比评估配置
+comparison:
+  enabled: false
+  baseline_models: []
+  metrics_to_compare:
+    - "overall_score"
+    - "validity_rate"
+    - "hypervolume"
+    - "property_r2"
