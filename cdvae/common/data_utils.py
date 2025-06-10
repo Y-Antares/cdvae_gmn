@@ -181,36 +181,35 @@ def lattice_params_to_matrix(a, b, c, alpha, beta, gamma):
     return np.array([vector_a, vector_b, vector_c])
 
 
-def lattice_params_to_matrix_torch(lengths, angles):
-    """Batched torch version to compute lattice matrix from params.
+# 在 cdvae/common/data_utils.py 文件中，请替换这个函数
 
-    lengths: torch.Tensor of shape (N, 3), unit A
-    angles: torch.Tensor of shape (N, 3), unit degree
+def lattice_params_to_matrix_torch(lengths, angles):
     """
-    angles_r = torch.deg2rad(angles)
-    coses = torch.cos(angles_r)
-    sins = torch.sin(angles_r)
+    Batched torch version to compute lattice matrix from params.
+    This version ensures the output is always float32.
+    """
+    angles_rad = torch.deg2rad(angles)
+    coses = torch.cos(angles_rad)
+    sins = torch.sin(angles_rad)
 
     val = (coses[:, 0] * coses[:, 1] - coses[:, 2]) / (sins[:, 0] * sins[:, 1])
-    # Sometimes rounding errors result in values slightly > 1.
-    val = torch.clamp(val, -1., 1.)
-    gamma_star = torch.arccos(val)
+    # clamp val to avoid nan
+    val = torch.clamp(val, -1, 1)
+    gamma_star = torch.acos(val)
 
-    vector_a = torch.stack([
-        lengths[:, 0] * sins[:, 1],
-        torch.zeros(lengths.size(0), device=lengths.device),
-        lengths[:, 0] * coses[:, 1]], dim=1)
-    vector_b = torch.stack([
-        -lengths[:, 1] * sins[:, 0] * torch.cos(gamma_star),
-        lengths[:, 1] * sins[:, 0] * torch.sin(gamma_star),
-        lengths[:, 1] * coses[:, 0]], dim=1)
-    vector_c = torch.stack([
-        torch.zeros(lengths.size(0), device=lengths.device),
-        torch.zeros(lengths.size(0), device=lengths.device),
-        lengths[:, 2]], dim=1)
+    matrix = torch.zeros(lengths.size(0), 3, 3, device=lengths.device)
 
-    return torch.stack([vector_a, vector_b, vector_c], dim=1)
+    matrix[:, 0, 0] = lengths[:, 0]
+    matrix[:, 0, 1] = lengths[:, 1] * coses[:, 2]
+    matrix[:, 0, 2] = lengths[:, 2] * coses[:, 1]
 
+    matrix[:, 1, 1] = lengths[:, 1] * sins[:, 2]
+    matrix[:, 1, 2] = lengths[:, 2] * (coses[:, 0] - coses[:, 1] * coses[:, 2]) / sins[:, 2]
+
+    matrix[:, 2, 2] = lengths[:, 2] * sins[:, 1] * torch.sin(gamma_star) / sins[:, 2]
+
+    # 【暴力精度修复】无论内部计算是什么精度，在返回前强制转换为 float32
+    return matrix.to(torch.float32)
 
 def compute_volume(batch_lattice):
     """Compute volume from batched lattice matrix
@@ -394,6 +393,8 @@ def radius_graph_pbc(cart_coords, lengths, angles, num_atoms,
 
     # Compute the x, y, z positional offsets for each cell in each image
     data_cell = torch.transpose(lattice, 1, 2)
+    data_cell = data_cell.to(torch.float32) # 暴力解决精度问题
+    unit_cell_batch = unit_cell_batch.to(torch.float32)
     pbc_offsets = torch.bmm(data_cell, unit_cell_batch)
     pbc_offsets_per_atom = torch.repeat_interleave(
         pbc_offsets, num_atoms_per_image_sqr, dim=0
